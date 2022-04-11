@@ -1,0 +1,130 @@
+From fddfaef1ef9e56ac291d5bb5c52b55ce5d90a2cb Mon Sep 17 00:00:00 2001
+From: Benjamin Tissoires <benjamin.tissoires@redhat.com>
+Date: Mon, 11 Apr 2022 16:19:35 +0200
+Subject: [PATCH] HID: hidraw: implement BPF hooks to emulate HIDEVIOCREVOKE
+
+We could implement directly a new ioctl HIDEVIOCREVOKE, but that would
+mean that we need to update any client that makes hidraw access.
+
+While with BPF, we got superpowers and we can actually revoke accesses
+without even knowing about the fd.
+
+See https://gitlab.freedesktop.org/bentiss/logind-hidraw for an example
+of such a superpower logind that is capable of revoking files that have
+not been opened through its own facility.
+
+Signed-off-by: Benjamin Tissoires <benjamin.tissoires@redhat.com>
+---
+ drivers/hid/hidraw.c   | 28 ++++++++++++++++++++++++++--
+ include/linux/hidraw.h |  1 +
+ 2 files changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/hid/hidraw.c b/drivers/hid/hidraw.c
+index 681614a8302a..1d82326c0043 100644
+--- a/drivers/hid/hidraw.c
++++ b/drivers/hid/hidraw.c
+@@ -36,12 +36,21 @@ static struct class *hidraw_class;
+ static struct hidraw *hidraw_table[HIDRAW_MAX_DEVICES];
+ static DECLARE_RWSEM(minors_rwsem);
+ 
++__weak bool hidraw_bpf_revoked(__u64 file)
++{
++	return false;
++}
++ALLOW_ERROR_INJECTION(hidraw_bpf_revoked, TRUE);
++
+ static ssize_t hidraw_read(struct file *file, char __user *buffer, size_t count, loff_t *ppos)
+ {
+ 	struct hidraw_list *list = file->private_data;
+ 	int ret = 0, len;
+ 	DECLARE_WAITQUEUE(wait, current);
+ 
++	if (hidraw_bpf_revoked((__u64)file))
++		return -ENODEV;
++
+ 	mutex_lock(&list->read_mutex);
+ 
+ 	while (ret == 0) {
+@@ -107,6 +116,9 @@ static ssize_t hidraw_send_report(struct file *file, const char __user *buffer,
+ 	__u8 *buf;
+ 	int ret = 0;
+ 
++	if (hidraw_bpf_revoked((__u64)file))
++		return -ENODEV;
++
+ 	lockdep_assert_held(&minors_rwsem);
+ 
+ 	if (!hidraw_table[minor] || !hidraw_table[minor]->exist) {
+@@ -160,6 +172,10 @@ static ssize_t hidraw_send_report(struct file *file, const char __user *buffer,
+ static ssize_t hidraw_write(struct file *file, const char __user *buffer, size_t count, loff_t *ppos)
+ {
+ 	ssize_t ret;
++
++	if (hidraw_bpf_revoked((__u64)file))
++		return -ENODEV;
++
+ 	down_read(&minors_rwsem);
+ 	ret = hidraw_send_report(file, buffer, count, HID_OUTPUT_REPORT);
+ 	up_read(&minors_rwsem);
+@@ -182,6 +198,9 @@ static ssize_t hidraw_get_report(struct file *file, char __user *buffer, size_t
+ 	int ret = 0, len;
+ 	unsigned char report_number;
+ 
++	if (hidraw_bpf_revoked((__u64)file))
++		return -ENODEV;
++
+ 	lockdep_assert_held(&minors_rwsem);
+ 
+ 	if (!hidraw_table[minor] || !hidraw_table[minor]->exist) {
+@@ -254,7 +273,7 @@ static __poll_t hidraw_poll(struct file *file, poll_table *wait)
+ 	poll_wait(file, &list->hidraw->wait, wait);
+ 	if (list->head != list->tail)
+ 		mask |= EPOLLIN | EPOLLRDNORM;
+-	if (!list->hidraw->exist)
++	if (!list->hidraw->exist || hidraw_bpf_revoked((__u64)file))
+ 		mask |= EPOLLERR | EPOLLHUP;
+ 	return mask;
+ }
+@@ -295,6 +314,7 @@ static int hidraw_open(struct inode *inode, struct file *file)
+ 	}
+ 
+ 	list->hidraw = hidraw_table[minor];
++	list->file = (u64)file;
+ 	mutex_init(&list->read_mutex);
+ 	spin_lock_irqsave(&hidraw_table[minor]->list_lock, flags);
+ 	list_add_tail(&list->node, &hidraw_table[minor]->list);
+@@ -313,6 +333,9 @@ static int hidraw_fasync(int fd, struct file *file, int on)
+ {
+ 	struct hidraw_list *list = file->private_data;
+ 
++	if (hidraw_bpf_revoked((__u64)file))
++		return -ENODEV;
++
+ 	return fasync_helper(fd, file, on, &list->fasync);
+ }
+ 
+@@ -515,7 +538,8 @@ int hidraw_report_event(struct hid_device *hid, u8 *data, int len)
+ 	list_for_each_entry(list, &dev->list, node) {
+ 		int new_head = (list->head + 1) & (HIDRAW_BUFFER_SIZE - 1);
+ 
+-		if (new_head == list->tail)
++		if (hidraw_bpf_revoked(list->file) ||
++		    new_head == list->tail)
+ 			continue;
+ 
+ 		if (!(list->buffer[list->head].value = kmemdup(data, len, GFP_ATOMIC))) {
+diff --git a/include/linux/hidraw.h b/include/linux/hidraw.h
+index cd67f4ca5599..98353c4145a9 100644
+--- a/include/linux/hidraw.h
++++ b/include/linux/hidraw.h
+@@ -32,6 +32,7 @@ struct hidraw_list {
+ 	struct hidraw *hidraw;
+ 	struct list_head node;
+ 	struct mutex read_mutex;
++	u64 file; /* opaque point to struct file *, used as a hash */
+ };
+ 
+ #ifdef CONFIG_HIDRAW
+-- 
+2.35.1
+
