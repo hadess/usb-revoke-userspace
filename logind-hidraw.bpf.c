@@ -22,7 +22,7 @@ char LICENSE[] SEC("license") = "GPL";
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 8192);
-	__type(key, __u64);
+	__type(key, struct file *);
 	__type(value, u8);
 } authorized_files SEC(".maps");
 
@@ -33,7 +33,6 @@ int BPF_PROG(hidraw_open, struct inode *inode, struct file *file)
 {
 	pid_t pid;
 	const __u8 revoked = 0;
-	__u64 id = (__u64)file;
 
 	/* not in forgeground, don't care */
 	if (!foreground)
@@ -43,7 +42,7 @@ int BPF_PROG(hidraw_open, struct inode *inode, struct file *file)
 	bpf_printk("fentry open: pid = %d, file = %p", pid, file);
 
 	/* store the id in the allowed list */
-	bpf_map_update_elem(&authorized_files, &id, &revoked, BPF_ANY);
+	bpf_map_update_elem(&authorized_files, &file, &revoked, BPF_ANY);
 
 	return 0;
 }
@@ -52,7 +51,6 @@ SEC("fentry/hidraw_release")
 int BPF_PROG(hidraw_release, struct inode *inode, struct file *file)
 {
 	pid_t pid;
-	__u64 id = (__u64)file;
 
 	/* not in forgeground, don't care */
 	if (!foreground)
@@ -62,13 +60,12 @@ int BPF_PROG(hidraw_release, struct inode *inode, struct file *file)
 	bpf_printk("fentry delete: pid = %d, file = %p", pid, file);
 
 	/* the file has been closed, we can clean up */
-	bpf_map_delete_elem(&authorized_files, &id);
+	bpf_map_delete_elem(&authorized_files, &file);
 
 	return 0;
 }
 
-SEC("fmod_ret/hidraw_bpf_revoked")
-int BPF_PROG(hidraw_bpf_revoked, __u64 file)
+static int is_revoked(struct file *file)
 {
 	__u8 *revoked;
 
@@ -85,4 +82,16 @@ int BPF_PROG(hidraw_bpf_revoked, __u64 file)
 
 	/* foreground, let's use the revoked state */
 	return *revoked;
+}
+
+SEC("fmod_ret/hidraw_bpf_revoked")
+int BPF_PROG(hidraw_bpf_revoked, struct file *file)
+{
+	return is_revoked(file);
+}
+
+SEC("fmod_ret/hidraw_bpf_muted")
+int BPF_PROG(hidraw_bpf_muted, struct file *file)
+{
+	return is_revoked(file);
 }
