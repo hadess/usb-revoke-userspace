@@ -94,9 +94,3 @@ int BPF_PROG(hidraw_bpf_revoked, struct hidraw_list *list)
 {
 	return is_revoked(list);
 }
-
-SEC("fmod_ret/hidraw_is_muted")
-int BPF_PROG(hidraw_bpf_muted, struct hidraw_list *list)
-{
-	return is_revoked(list);
-}

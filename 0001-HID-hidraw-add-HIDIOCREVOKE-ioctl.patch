@@ -1,31 +1,39 @@
-From 252b85a30e59fffbe25fa7d2cfe4d521a86748fa Mon Sep 17 00:00:00 2001
-From: Benjamin Tissoires <benjamin.tissoires@redhat.com>
-Date: Mon, 11 Apr 2022 16:19:35 +0200
+From 03819ab2c186ed943582c922ca692ae6eb9707e0 Mon Sep 17 00:00:00 2001
+From: Peter Hutterer <peter.hutterer@who-t.net>
+Date: Thu, 21 Apr 2022 16:57:01 +1000
 Subject: [PATCH] HID: hidraw - add HIDIOCREVOKE ioctl
 
-This is the hidraw equivalent to the EVIOCREVOKE ioctl.
+There is a need for userspace applications to open HID devices directly.
+Use-cases include configuration of gaming mice or direct access to
+joystick devices. The latter is currently handled by the uaccess tag in
+systemd, other devices include more custom/local configurations or just
+sudo.
 
-Mark the hidraw_is_revoked and hidraw_is_muted functions as __weak so
-we can also hook up BPF on to them.
-With BPF, we got superpowers and we can actually revoke accesses without
-even knowing about the fd from userspace.
+A better approach is what we already have for evdev devices: give the
+application a file descriptor and revoke it when it may no longer access
+that device.
 
-See https://gitlab.freedesktop.org/bentiss/logind-hidraw for an example
-of such a superpower logind that is capable of revoking files that have
-not been opened through its own facility.
+This patch is the hidraw equivalent to the EVIOCREVOKE ioctl, see
+commit c7dc65737c9a607d3e6f8478659876074ad129b8 for full details.
 
+A draft MR for systemd-logind has been filed here:
+https://github.com/systemd/systemd/pull/23140
+
+Signed-off-by: Peter Hutterer <peter.hutterer@who-t.net>
+Link: https://lore.kernel.org/r/YmEAPZKDisM2HAsG@quokka
+[bentiss] add BPF capability
 Signed-off-by: Benjamin Tissoires <benjamin.tissoires@redhat.com>
 ---
- drivers/hid/hidraw.c        | 46 ++++++++++++++++++++++++++++++++++---
+ drivers/hid/hidraw.c        | 41 +++++++++++++++++++++++++++++++++----
  include/linux/hidraw.h      |  1 +
  include/uapi/linux/hidraw.h |  1 +
- 3 files changed, 45 insertions(+), 3 deletions(-)
+ 3 files changed, 39 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/hid/hidraw.c b/drivers/hid/hidraw.c
-index 681614a8302a..7010c70f1877 100644
+index 681614a8302a..ee5e6fe33a4d 100644
 --- a/drivers/hid/hidraw.c
 +++ b/drivers/hid/hidraw.c
-@@ -36,12 +36,34 @@ static struct class *hidraw_class;
+@@ -36,12 +36,21 @@ static struct class *hidraw_class;
  static struct hidraw *hidraw_table[HIDRAW_MAX_DEVICES];
  static DECLARE_RWSEM(minors_rwsem);
  
@@ -34,19 +42,6 @@ index 681614a8302a..7010c70f1877 100644
 +	return list->revoked;
 +}
 +ALLOW_ERROR_INJECTION(hidraw_is_revoked, TRUE);
-+
-+__weak noinline bool hidraw_is_muted(struct hidraw_list *list)
-+{
-+	return list->revoked;
-+}
-+ALLOW_ERROR_INJECTION(hidraw_is_muted, TRUE);
-+
-+static int hidraw_revoke(struct hidraw_list *list)
-+{
-+	list->revoked = true;
-+
-+	return 0;
-+}
 +
  static ssize_t hidraw_read(struct file *file, char __user *buffer, size_t count, loff_t *ppos)
  {
@@ -60,20 +55,22 @@ index 681614a8302a..7010c70f1877 100644
  	mutex_lock(&list->read_mutex);
  
  	while (ret == 0) {
-@@ -159,7 +181,12 @@ static ssize_t hidraw_send_report(struct file *file, const char __user *buffer,
+@@ -159,9 +168,13 @@ static ssize_t hidraw_send_report(struct file *file, const char __user *buffer,
  
  static ssize_t hidraw_write(struct file *file, const char __user *buffer, size_t count, loff_t *ppos)
  {
 +	struct hidraw_list *list = file->private_data;
  	ssize_t ret;
-+
-+	if (hidraw_is_revoked(list))
-+		return -ENODEV;
-+
  	down_read(&minors_rwsem);
- 	ret = hidraw_send_report(file, buffer, count, HID_OUTPUT_REPORT);
+-	ret = hidraw_send_report(file, buffer, count, HID_OUTPUT_REPORT);
++	if (hidraw_is_revoked(list))
++		ret = -ENODEV;
++	else
++		ret = hidraw_send_report(file, buffer, count, HID_OUTPUT_REPORT);
  	up_read(&minors_rwsem);
-@@ -254,7 +281,7 @@ static __poll_t hidraw_poll(struct file *file, poll_table *wait)
+ 	return ret;
+ }
+@@ -254,7 +267,7 @@ static __poll_t hidraw_poll(struct file *file, poll_table *wait)
  	poll_wait(file, &list->hidraw->wait, wait);
  	if (list->head != list->tail)
  		mask |= EPOLLIN | EPOLLRDNORM;
@@ -82,7 +79,7 @@ index 681614a8302a..7010c70f1877 100644
  		mask |= EPOLLERR | EPOLLHUP;
  	return mask;
  }
-@@ -313,6 +340,9 @@ static int hidraw_fasync(int fd, struct file *file, int on)
+@@ -313,6 +326,9 @@ static int hidraw_fasync(int fd, struct file *file, int on)
  {
  	struct hidraw_list *list = file->private_data;
  
@@ -92,7 +89,21 @@ index 681614a8302a..7010c70f1877 100644
  	return fasync_helper(fd, file, on, &list->fasync);
  }
  
-@@ -367,11 +397,12 @@ static long hidraw_ioctl(struct file *file, unsigned int cmd,
+@@ -360,6 +376,13 @@ static int hidraw_release(struct inode * inode, struct file * file)
+ 	return 0;
+ }
+ 
++static int hidraw_revoke(struct hidraw_list *list, struct file *file)
++{
++	list->revoked = true;
++
++	return 0;
++}
++
+ static long hidraw_ioctl(struct file *file, unsigned int cmd,
+ 							unsigned long arg)
+ {
+@@ -367,11 +390,12 @@ static long hidraw_ioctl(struct file *file, unsigned int cmd,
  	unsigned int minor = iminor(inode);
  	long ret = 0;
  	struct hidraw *dev;
@@ -106,7 +117,7 @@ index 681614a8302a..7010c70f1877 100644
  		ret = -ENODEV;
  		goto out;
  	}
-@@ -409,6 +440,14 @@ static long hidraw_ioctl(struct file *file, unsigned int cmd,
+@@ -409,6 +433,14 @@ static long hidraw_ioctl(struct file *file, unsigned int cmd,
  					ret = -EFAULT;
  				break;
  			}
@@ -115,18 +126,18 @@ index 681614a8302a..7010c70f1877 100644
 +				if (user_arg)
 +					ret = -EINVAL;
 +				else
-+					ret = hidraw_revoke(list);
++					ret = hidraw_revoke(list, file);
 +				break;
 +			}
  		default:
  			{
  				struct hid_device *hid = dev->hid;
-@@ -515,7 +554,8 @@ int hidraw_report_event(struct hid_device *hid, u8 *data, int len)
+@@ -515,7 +547,8 @@ int hidraw_report_event(struct hid_device *hid, u8 *data, int len)
  	list_for_each_entry(list, &dev->list, node) {
  		int new_head = (list->head + 1) & (HIDRAW_BUFFER_SIZE - 1);
  
 -		if (new_head == list->tail)
-+		if (hidraw_is_muted(list) ||
++		if (hidraw_is_revoked(list) ||
 +		    new_head == list->tail)
  			continue;
  
@@ -144,14 +155,14 @@ index cd67f4ca5599..18fd30a288de 100644
  
  #ifdef CONFIG_HIDRAW
 diff --git a/include/uapi/linux/hidraw.h b/include/uapi/linux/hidraw.h
-index 33ebad81720a..5711771b8e23 100644
+index 33ebad81720a..d0563f251da5 100644
 --- a/include/uapi/linux/hidraw.h
 +++ b/include/uapi/linux/hidraw.h
 @@ -46,6 +46,7 @@ struct hidraw_devinfo {
  /* The first byte of SOUTPUT and GOUTPUT is the report number */
  #define HIDIOCSOUTPUT(len)    _IOC(_IOC_WRITE|_IOC_READ, 'H', 0x0B, len)
  #define HIDIOCGOUTPUT(len)    _IOC(_IOC_WRITE|_IOC_READ, 'H', 0x0C, len)
-+#define HIDIOCREVOKE		_IOW('H', 0x0D, int) /* Revoke device access */
++#define HIDIOCREVOKE	_IOW('H', 0x0D, int) /* Revoke device access */
  
  #define HIDRAW_FIRST_MINOR 0
  #define HIDRAW_MAX_DEVICES 64
