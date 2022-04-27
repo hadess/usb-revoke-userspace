@@ -9,11 +9,6 @@ make
 sudo ./logind-hidraw
 ```
 
-Note that old version of `bpftool` might not work, so I'm running the following:
-```bash
-BPFTOOL=${PATH_TO_COMPILED_KERNEL}/tools/bpf/bpftool/bpftool make
-```
-
 ## How does it work
 
 The kernel patch adds a new function `hidraw_is_revoked`. This
