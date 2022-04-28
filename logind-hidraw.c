@@ -11,12 +11,32 @@
 #include <bpf/libbpf.h>
 #include "logind-hidraw.skel.h"
 
+/* included in libbpf 0.6
+ *
+ * We could just use DECLARE_LIBBPF_OPTS but LIBBPF_OPTS is shorter
+ */
+#ifndef LIBBPF_OPTS
+#define LIBBPF_OPTS DECLARE_LIBBPF_OPTS
+#endif /* LIBBPF_OPTS */
+
+/* require libbpf 0.5 */
+#ifndef __LIBBPF_LEGACY_BPF_H
+#error libbpf 0.5+ required
+#endif /* __LIBBPF_LEGACY_BPF_H */
+
 struct logind_event {
 	__u64 key;
 	int pid;
 };
 
+struct get_key_args {
+	int user_fd;
+	unsigned int pid;
+	int retval;
+};
+
 static bool foreground = true;
+static int get_key_fd;
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
@@ -41,12 +61,23 @@ static int handle_bpf_event(void *ctx, void *data, size_t data_sz)
 	struct tm *tm;
 	char ts[32];
 	time_t t;
+	int err;
+	struct get_key_args args = {
+		.user_fd = 25,
+		.pid = e->pid,
+	};
+	DECLARE_LIBBPF_OPTS(bpf_test_run_opts, tattr,
+		.ctx_in = &args,
+		.ctx_size_in = sizeof(args),
+	);
 
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	printf("%-8s %-8d %-8llx\n", ts, e->pid, e->key);
+	err = bpf_prog_test_run_opts(get_key_fd, &tattr);
+
+	printf("%-8s %-8d %-8llx / syscall: %d retval: 0x%04x\n", ts, e->pid, e->key, err, args.retval);
 
 	return 0;
 }
@@ -58,7 +89,7 @@ int main(int argc, char **argv)
 	bool prev_state = foreground;
 	struct ring_buffer *rb = NULL;
 
-	//libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
 
@@ -75,6 +106,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to attach BPF skeleton\n");
 		goto cleanup;
 	}
+
+	get_key_fd = bpf_program__fd(skel->progs.get_key);
 
 	if (signal(SIGINT, sig_int) == SIG_ERR) {
 		fprintf(stderr, "can't set signal handler: %s\n", strerror(errno));

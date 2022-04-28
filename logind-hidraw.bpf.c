@@ -133,3 +133,26 @@ int BPF_PROG(hidraw_bpf_revoked, struct hidraw_list *list)
 {
 	return is_revoked(list);
 }
+
+struct get_key_args {
+	int user_fd;
+	unsigned int pid;
+	int retval;
+};
+
+SEC("syscall")
+int get_key(struct get_key_args *ctx)
+{
+	pid_t pid;
+
+	pid = bpf_get_current_pid_tgid() >> 32;
+
+	bpf_printk("getting a call from %d about fd %d of %d",
+		   pid,
+		   ctx->user_fd,
+		   ctx->pid);
+
+	ctx->retval = 0xbeef;
+
+	return 0;
+}
