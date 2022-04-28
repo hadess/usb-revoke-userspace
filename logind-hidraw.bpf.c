@@ -40,6 +40,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 struct logind_event {
 	__u64 key;
+	int fd;
 	int pid;
 };
 
@@ -63,7 +64,6 @@ int BPF_PROG(hidraw_open, struct inode *inode, struct file *file, int ret)
 	pid_t pid;
 	const __u8 revoked = 0;
 	struct hidraw_list *list = file->private_data;
-	struct logind_event *e;
 
 	if (ret)
 		return 0;
@@ -78,16 +78,33 @@ int BPF_PROG(hidraw_open, struct inode *inode, struct file *file, int ret)
 	/* store the id in the allowed list */
 	bpf_map_update_elem(&authorized_files, &list, &revoked, BPF_ANY);
 
+	return 0;
+}
+
+SEC("fentry/fd_install")
+int BPF_PROG(fd_install, unsigned int fd, struct file *file)
+{
+	struct logind_event *e;
+	struct hidraw_list *list = file->private_data;
+	/*
+	 * we can guarantee that the file is already in the hashmap
+	 * because fd_install is call last and so hidraw_open() as
+	 * already been called
+	 */
+	__u8 *value = bpf_map_lookup_elem(&authorized_files, &list);
+
+	if (!value)
+		return 0;
+
 	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;
 
-	e->pid = pid;
-	e->key = (__u64)file;
+	e->pid = bpf_get_current_pid_tgid() >> 32;
+	e->key = (__u64)list;
+	e->fd = fd;
 
 	bpf_ringbuf_submit(e, 0);
-
-	return 0;
 }
 
 SEC("fentry/hidraw_release")

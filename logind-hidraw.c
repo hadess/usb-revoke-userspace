@@ -26,6 +26,7 @@
 
 struct logind_event {
 	__u64 key;
+	int fd;
 	int pid;
 };
 
@@ -63,7 +64,7 @@ static int handle_bpf_event(void *ctx, void *data, size_t data_sz)
 	time_t t;
 	int err;
 	struct get_key_args args = {
-		.user_fd = 25,
+		.user_fd = e->fd,
 		.pid = e->pid,
 	};
 	DECLARE_LIBBPF_OPTS(bpf_test_run_opts, tattr,
@@ -77,7 +78,7 @@ static int handle_bpf_event(void *ctx, void *data, size_t data_sz)
 
 	err = bpf_prog_test_run_opts(get_key_fd, &tattr);
 
-	printf("%-8s %-8d %-8llx / syscall: %d retval: 0x%04x\n", ts, e->pid, e->key, err, args.retval);
+	printf("%-8s %-8d %d %-8llx / syscall: %d retval: 0x%04x\n", ts, e->pid, e->fd, e->key, err, args.retval);
 
 	return 0;
 }
