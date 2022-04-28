@@ -57,7 +57,7 @@ int BPF_PROG(hidraw_open, struct inode *inode, struct file *file, int ret)
 	if (ret)
 		return 0;
 
-	/* not in forgeground, don't care */
+	/* not in foreground, don't care */
 	if (!foreground)
 		return 0;
 
@@ -76,7 +76,7 @@ int BPF_PROG(hidraw_release, struct inode *inode, struct file *file)
 	struct hidraw_list *list = file->private_data;
 	pid_t pid;
 
-	/* not in forgeground, don't care */
+	/* not in foreground, don't care */
 	if (!foreground)
 		return 0;
 
