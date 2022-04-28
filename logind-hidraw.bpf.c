@@ -38,6 +38,16 @@ char LICENSE[] SEC("license") = "GPL";
 
 #endif /* BPF_PRINTK_FMT_MOD */
 
+struct logind_event {
+	__u64 key;
+	int pid;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 256 * 1024 /* 256 KB */);
+} rb SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 8192);
@@ -53,6 +63,7 @@ int BPF_PROG(hidraw_open, struct inode *inode, struct file *file, int ret)
 	pid_t pid;
 	const __u8 revoked = 0;
 	struct hidraw_list *list = file->private_data;
+	struct logind_event *e;
 
 	if (ret)
 		return 0;
@@ -66,6 +77,15 @@ int BPF_PROG(hidraw_open, struct inode *inode, struct file *file, int ret)
 
 	/* store the id in the allowed list */
 	bpf_map_update_elem(&authorized_files, &list, &revoked, BPF_ANY);
+
+	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+	if (!e)
+		return 0;
+
+	e->pid = pid;
+	e->key = (__u64)file;
+
+	bpf_ringbuf_submit(e, 0);
 
 	return 0;
 }
