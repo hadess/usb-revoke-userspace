@@ -8,7 +8,7 @@ ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/' | sed 's
 INCLUDES := -I$(OUTPUT)
 CFLAGS := -g -Wall
 
-APPS = logind-hidraw
+APPS = usb-revoke
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
 # to the includes list when compiling with `-target bpf` because otherwise some
