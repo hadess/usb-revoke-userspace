@@ -40,10 +40,11 @@ int usb_revoke(struct usb_revoke_args *ctx)
 
 	pid = bpf_get_current_pid_tgid() >> 32;
 
-	bpf_printk("getting a call from %d about usbdev 0x%x:0x%x (UID: %d)",
+	//FIXME max 3 args to printk
+	bpf_printk("getting a call from %d about usbdev 0x%x:0x%x\n",
+		   pid,
 		   ctx->busnum,
-		   ctx->devnum,
-		   ctx->uid);
+		   ctx->devnum);
 
 	ctx->retval = 0xbeef;
 
