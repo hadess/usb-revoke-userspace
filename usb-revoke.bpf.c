@@ -7,6 +7,8 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+extern int usb_revoke(int busnum, int devnum, unsigned int uid) __ksym;
+
 /*
  * work around libbpf: failed to find skeleton map '.rodata.str1.1'
  * for older bpf_helpers.h
@@ -34,7 +36,7 @@ struct usb_revoke_args {
 };
 
 SEC("syscall")
-int usb_revoke(struct usb_revoke_args *ctx)
+int usb_revoke_bpf(struct usb_revoke_args *ctx)
 {
 	pid_t pid;
 
@@ -46,7 +48,9 @@ int usb_revoke(struct usb_revoke_args *ctx)
 		   ctx->busnum,
 		   ctx->devnum);
 
-	ctx->retval = 0xbeef;
+	ctx->retval = usb_revoke(ctx->busnum, ctx->devnum, ctx->uid);
+
+	bpf_printk("retval from kernel is: %i\n", ctx->retval);
 
 	return 0;
 }

@@ -39,7 +39,7 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 }
 
 static int
-usb_revoke(int busnum, int devnum, unsigned int uid)
+usb_revoke_bpf(int busnum, int devnum, unsigned int uid)
 {
 	struct usb_revoke_args args = {
 		.busnum = busnum,
@@ -82,8 +82,8 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	usb_revoke_fd = bpf_program__fd(skel->progs.usb_revoke);
-	err = usb_revoke (1, 2, 3);
+	usb_revoke_fd = bpf_program__fd(skel->progs.usb_revoke_bpf);
+	err = usb_revoke_bpf (1, 2, 3);
 
 cleanup:
 	usb_revoke_bpf__destroy(skel);
