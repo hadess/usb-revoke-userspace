@@ -58,43 +58,25 @@ usb_revoke_bpf(int device_fd, int namespace_fd, int uid)
 	int err;
 
 	err = bpf_prog_test_run_opts(usb_revoke_fd, &tattr);
+	if (err) {
+		printf("error while calling usb_revoke\n");
+		return err;
+	}
 
 	printf("syscall: %d retval: 0x%04x\n", err, args.retval);
 
-	return 0;
+	return args.retval;
 }
 
 static struct usb_revoke_bpf *
 init_bpf (void)
 {
-	struct usb_revoke_bpf *skel;
-	int err;
-
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
 
 	/* Open load and verify BPF application */
-	skel = usb_revoke_bpf__open_and_load();
-	if (!skel) {
-		fprintf(stderr, "Failed to open BPF skeleton\n");
-		return NULL;
-	}
-
-	/* Attach tracepoint handler */
-	err = usb_revoke_bpf__attach(skel);
-	if (err) {
-		fprintf(stderr, "Failed to attach BPF skeleton\n");
-		goto cleanup;
-	}
-
-	usb_revoke_fd = bpf_program__fd(skel->progs.usb_revoke_bpf);
-	if (usb_revoke_fd >= 0)
-		return skel;
-
-cleanup:
-	usb_revoke_bpf__destroy(skel);
-	return NULL;
+	return usb_revoke_bpf__open_and_load();
 }
 
 static int device_fd = -1;
